@@ -93,33 +93,19 @@ def ensure_pipfile(validate=True):
     # Assert Pipfile exists.
     if not project.pipfile_exists:
 
+        # Create a Pipfile...
+        project.create_pipfile()
+        click.echo(crayons.yellow('Creating a Pipfile for this project...'), err=True)
+
         # If there's a requirements file, but no Pipfile...
         if project.requirements_exists:
-            click.echo(crayons.yellow('Requirements file found, instead of Pipfile! Converting...'))
-        
-            # Create a Pipfile...
-            project.create_pipfile()
-
-            click.echo(crayons.yellow('Installing dependencies from \'requirements.txt\'...'))
+            click.echo(crayons.yellow('Requirements file found, instead of existing Pipfile! Converting...'))
         
             # Install everything from the requirements.txt.
-            delegator.run('{0} install -r {1}'.format(which('pip'), project.requirements_location))
-            installed = delegator.run('{0} freeze'.format(which('pip'))).out.split('\n')
+            with open(project.requirements_location, 'r') as f:
+                requirements = [r for r in f.read().split('\n') if r]
 
-            # Remove setuptools and friends from installed, if present.
-            for package_name in BAD_PACKAGES:
-                for i, package in enumerate(installed):
-                    if package.startswith(package_name):
-                        del installed[i]
-
-            for package in installed:
-                if package:
-                    project.add_package_to_pipfile(package)
-
-        else:
-            click.echo(crayons.yellow('Creating a Pipfile for this project...'), err=True)
-            # Create the pipfile if it doesn't exist.
-            project.create_pipfile()
+            project.add_packages_to_pipfile(requirements)
 
     # Validate the Pipfile's contents.
     if validate and project.virtualenv_exists:
