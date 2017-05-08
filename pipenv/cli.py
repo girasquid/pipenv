@@ -216,7 +216,7 @@ def do_where(virtualenv=False, bare=True):
             click.echo(location)
 
 
-def do_install_dependencies(dev=False, only=False, bare=False, requirements=False, allow_global=False, ignore_hashes=False):
+def do_install_dependencies(dev=False, only=False, bare=False, requirements=False, allow_global=False, require_hashes=False):
     """"Executes the install functionality."""
 
     if requirements:
@@ -242,7 +242,7 @@ def do_install_dependencies(dev=False, only=False, bare=False, requirements=Fals
         deps.update(lockfile['develop'])
         vcs_deps.update(lockfile.get('develop-vcs', {}))
 
-    if ignore_hashes:
+    if not require_hashes:
         # Remove hashes from generated requirements.
         for k, v in deps.items():
             if 'hash' in v:
@@ -262,28 +262,22 @@ def do_install_dependencies(dev=False, only=False, bare=False, requirements=Fals
 
     # pip install:
     with spinner():
-        c = pip_install(r=hashed_deps_path, ignore_hashes=ignore_hashes, allow_global=allow_global)
+        c = pip_install(r=hashed_deps_path, require_hashes=require_hashes, allow_global=allow_global)
 
     if c.return_code != 0:
         click.echo(crayons.red('An error occured while installing!'))
         click.echo(crayons.blue(format_pip_error(c.err)))
-        if 'PACKAGES DO NOT MATCH THE HASHES' in c.err:
-            click.echo(crayons.yellow('You can supply the --ignore-hashes option to '
-                                      '\'pipenv install\' to bypass this feature.'))
         sys.exit(c.return_code)
 
     if not bare:
         click.echo(crayons.blue(format_pip_output(c.out, r=hashed_deps_path)))
 
     with spinner():
-        c = pip_install(r=vcs_deps_path, ignore_hashes=True, allow_global=allow_global)
+        c = pip_install(r=vcs_deps_path, require_hashes=False, allow_global=allow_global)
 
     if c.return_code != 0:
         click.echo(crayons.red('An error occured while installing!'))
         click.echo(crayons.blue(format_pip_error(c.err)))
-        if 'PACKAGES DO NOT MATCH THE HASHES' in c.err:
-            click.echo(crayons.yellow('You can supply the --ignore-hashes option to '
-                                      '\'pipenv install\' to bypass this feature.'))
         sys.exit(c.return_code)
 
     if not bare:
@@ -456,7 +450,7 @@ def get_downloads_info(names_map, section):
     return info
 
 
-def do_lock(no_hashes=False):
+def do_lock(require_hashes=False):
     """Executes the freeze functionality."""
 
     # Purge the virtualenv download dir, for development dependencies.
@@ -479,7 +473,7 @@ def do_lock(no_hashes=False):
     # Add Development dependencies to lockfile.
     for dep in results:
         lockfile['develop'].update({dep['name']: {'version': '=={0}'.format(dep['version'])}})
-        if not no_hashes:
+        if require_hashes:
             lockfile['develop'][dep['name']]['hash'] = dep['hash']
 
     with spinner():
@@ -498,7 +492,7 @@ def do_lock(no_hashes=False):
     # Add default dependencies to lockfile.
     for dep in results:
         lockfile['default'].update({dep['name']: {'version': '=={0}'.format(dep['version'])}})
-        if not no_hashes:
+        if require_hashes:
             lockfile['default'][dep['name']]['hash'] = dep['hash']
 
     # Properly case package names.
@@ -581,7 +575,7 @@ def do_purge(bare=False, downloads=False, allow_global=False):
         click.echo(crayons.yellow('Environment now purged and fresh!'))
 
 
-def do_init(dev=False, requirements=False, allow_global=False, ignore_hashes=False, no_hashes=False, ignore_pipfile=False):
+def do_init(dev=False, requirements=False, allow_global=False, require_hashes=False, ignore_pipfile=False):
     """Executes the init functionality."""
 
     ensure_pipfile()
@@ -611,24 +605,21 @@ def do_init(dev=False, requirements=False, allow_global=False, ignore_hashes=Fal
         if not lockfile['_meta'].get('hash', {}).get('sha256') == p.hash:
             click.echo(crayons.red('Pipfile.lock out of date, updating...'), err=True)
 
-            do_lock(no_hashes=no_hashes)
+            do_lock(require_hashes=require_hashes)
 
     # Write out the lockfile if it doesn't exist.
     if not project.lockfile_exists:
         click.echo(crayons.yellow('Pipfile.lock not found, creating...'), err=True)
-        do_lock(no_hashes=no_hashes)
-
-    # Override default `ignore_hashes` value if `no_hashes` set.
-    ignore_hashes = ignore_hashes or no_hashes
+        do_lock(require_hashes=require_hashes)
 
     do_install_dependencies(dev=dev, requirements=requirements, allow_global=allow_global,
-                            ignore_hashes=ignore_hashes)
+                            require_hashes=require_hashes)
 
     # Activate virtualenv instructions.
     do_activate_virtualenv()
 
 
-def pip_install(package_name=None, r=None, allow_global=False, ignore_hashes=False):
+def pip_install(package_name=None, r=None, allow_global=False, require_hashes=False):
     # try installing for each source in project.sources
     for source in project.sources:
         if r:
@@ -636,16 +627,7 @@ def pip_install(package_name=None, r=None, allow_global=False, ignore_hashes=Fal
         else:
             install_reqs = ' "{0}"'.format(package_name)
 
-        # Skip hash-checking mode, when appropriate.
-        if r:
-            with open(r) as f:
-                if '--hash' not in f.read():
-                    ignore_hashes = True
-        else:
-            if '--hash' not in install_reqs:
-                ignore_hashes = True
-
-        if not ignore_hashes:
+        if require_hashes:
             install_reqs += ' --require-hashes'
 
         c = delegator.run('"{0}" install {1} -i {2}'.format(which_pip(allow_global=allow_global), install_reqs, source['url']))
@@ -807,10 +789,9 @@ def cli(ctx, where=False, venv=False, rm=False, bare=False, three=False, python=
 @click.option('--python', default=False, nargs=1, help="Specify which version of Python virtualenv should use.")
 @click.option('--system', is_flag=True, default=False, help="System pip management.")
 @click.option('--lock', is_flag=True, default=False, help="Lock afterwards.")
-@click.option('--no-hashes', is_flag=True, default=False, help="Do not generate hashes, if locking.")
-@click.option('--ignore-hashes', is_flag=True, default=False, help="Ignore hashes when installing.")
+@click.option('--require-hashes', is_flag=True, default=False, help="Require hashes when installing.")
 @click.option('--ignore-pipfile', is_flag=True, default=False, help="Ignore Pipfile when installing, using the Pipfile.lock.")
-def install(package_name=False, more_packages=False, dev=False, three=False, python=False, system=False, lock=False, no_hashes=False, ignore_hashes=False, ignore_pipfile=False):
+def install(package_name=False, more_packages=False, dev=False, three=False, python=False, system=False, lock=False, require_hashes=False, ignore_pipfile=False):
 
     # Ensure that virtualenv is available.
     ensure_project(three=three, python=python)
@@ -821,7 +802,7 @@ def install(package_name=False, more_packages=False, dev=False, three=False, pyt
     # Install all dependencies, if none was provided.
     if package_name is False:
         click.echo(crayons.yellow('No package provided, installing all dependencies.'), err=True)
-        do_init(dev=dev, allow_global=system, ignore_hashes=ignore_hashes, ignore_pipfile=ignore_pipfile)
+        do_init(dev=dev, allow_global=system, require_hashes=require_hashes, ignore_pipfile=ignore_pipfile)
         sys.exit(0)
 
     for package_name in package_names:
@@ -829,7 +810,7 @@ def install(package_name=False, more_packages=False, dev=False, three=False, pyt
 
         # pip install:
         with spinner():
-            c = pip_install(package_name, ignore_hashes=True, allow_global=system)
+            c = pip_install(package_name, require_hashes=False, allow_global=system)
 
         click.echo(crayons.blue(format_pip_output(c.out)))
 
@@ -842,10 +823,8 @@ def install(package_name=False, more_packages=False, dev=False, three=False, pyt
             click.echo(crayons.blue(format_pip_error(c.err)))
             sys.exit(1)
 
-        if dev:
-            click.echo('Adding {0} to Pipfile\'s {1}...'.format(crayons.green(package_name), crayons.red('[dev-packages]')))
-        else:
-            click.echo('Adding {0} to Pipfile\'s {1}...'.format(crayons.green(package_name), crayons.red('[packages]')))
+        section = '[dev-packages]' if dev else '[packages]'
+        click.echo('Adding {0} to Pipfile\'s {1}...'.format(crayons.green(package_name), crayons.red(section)))
 
         # Add the package to the Pipfile.
         try:
@@ -857,7 +836,7 @@ def install(package_name=False, more_packages=False, dev=False, three=False, pyt
         easter_egg(package_name)
 
     if lock:
-        do_lock(no_hashes=no_hashes)
+        do_lock(require_hashes=require_hashes)
 
 
 @click.command(help="Un-installs a provided package and removes it from Pipfile, or (if none is given), un-installs all packages.")
@@ -867,10 +846,10 @@ def install(package_name=False, more_packages=False, dev=False, three=False, pyt
 @click.option('--python', default=False, nargs=1, help="Specify which version of Python virtualenv should use.")
 @click.option('--system', is_flag=True, default=False, help="System pip management.")
 @click.option('--lock', is_flag=True, default=False, help="Lock afterwards.")
-@click.option('--no-hashes', is_flag=True, default=False, help="Do not generate hashes, if locking.")
+@click.option('--require-hashes', is_flag=True, default=False, help="Require hashes for dependencies in Pipfile.lock.")
 @click.option('--dev', '-d', is_flag=True, default=False, help="Un-install all package from [dev-packages].")
 @click.option('--all', is_flag=True, default=False, help="Purge all package(s) from virtualenv. Does not edit Pipfile.")
-def uninstall(package_name=False, more_packages=False, three=None, python=False, system=False, lock=False, no_hashes=False, dev=False, all=False):
+def uninstall(package_name=False, more_packages=False, three=None, python=False, system=False, lock=False, require_hashes=False, dev=False, all=False):
     # Ensure that virtualenv is available.
     ensure_project(three=three, python=python)
 
@@ -917,22 +896,22 @@ def uninstall(package_name=False, more_packages=False, three=None, python=False,
             project.remove_package_from_pipfile(package_name, dev=False)
 
     if lock:
-        do_lock(no_hashes=no_hashes)
+        do_lock(require_hashes=require_hashes)
 
 
 @click.command(help="Generates Pipfile.lock.")
 @click.option('--three/--two', is_flag=True, default=None, help="Use Python 3/2 when creating virtualenv.")
 @click.option('--python', default=False, nargs=1, help="Specify which version of Python virtualenv should use.")
-@click.option('--no-hashes', is_flag=True, default=False, help="Do not generate hashes.")
+@click.option('--require-hashes', is_flag=True, default=False, help="Require hashes in Pipfile.lock.")
 @click.option('--requirements', '-r', is_flag=True, default=False, help="Generate output compatible with requirements.txt.")
-def lock(three=None, python=False, no_hashes=False, requirements=False):
+def lock(three=None, python=False, require_hashes=False, requirements=False):
     # Ensure that virtualenv is available.
     ensure_project(three=three, python=python)
 
     if requirements:
-        do_init(dev=True, requirements=requirements, no_hashes=no_hashes)
+        do_init(dev=True, requirements=requirements, require_hashes=require_hashes)
 
-    do_lock(no_hashes=no_hashes)
+    do_lock(require_hashes=require_hashes)
 
 
 @click.command(help="Spawns a shell within the virtualenv.", context_settings=dict(
